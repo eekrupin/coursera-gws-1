@@ -5,18 +5,13 @@ import (
 	"sort"
 	"strconv"
 	"sync"
-	"sync/atomic"
-	"time"
 )
 
 // сюда писать код
 
-var needCombine uint32
-var processCombine uint32
-var muMD5 sync.Mutex
-var Sh time.Duration
-
 func SingleHash(in, out chan interface{}) {
+
+	var muMD5 sync.Mutex
 
 	for val := range in {
 		data := fmt.Sprintf("%d", val)
@@ -53,24 +48,36 @@ func dataSignerCrc32(data string) chan string {
 func MultiHash(in, out chan interface{}) {
 
 	base := 6
+
+	inProcess := make(chan interface{}, 100)
+	wg := &sync.WaitGroup{}
+	go processMultiHash(wg, inProcess, out)
 	for ch_singleHash := range in {
-		//st := time.Now()
 		val := <-ch_singleHash.(chan interface{})
-		//fmt.Println("11", time.Since(st))
 		data := val.(string)
 		chans := make([]<-chan string, base)
-		multiHash := ""
 		for th := 0; th < base; th++ {
-			val_th := th
-			chans[th] = dataSignerCrc32(strconv.Itoa(val_th) + data)
-			//multiHash = multiHash + DataSignerCrc32(strconv.Itoa(th)+data)
+			chans[th] = dataSignerCrc32(strconv.Itoa(th) + data)
 		}
+		wg.Add(1)
+		inProcess <- chans
+	}
+	wg.Wait()
+	close(inProcess)
+
+}
+
+func processMultiHash(wg *sync.WaitGroup, inProcess chan interface{}, out chan interface{}) {
+	for val := range inProcess {
+		chans := val.([]<-chan string)
+		multiHash := ""
 		for _, chanCrc := range chans {
-			multiHash = multiHash + <-chanCrc
+			multiHash2 := <-chanCrc
+			multiHash = multiHash + multiHash2
 		}
 		out <- multiHash
+		wg.Done()
 	}
-
 }
 
 func CombineResults(in, out chan interface{}) {
@@ -78,10 +85,6 @@ func CombineResults(in, out chan interface{}) {
 	var data []string
 	for val := range in {
 		data = append(data, val.(string))
-		atomic.AddUint32(&processCombine, 1)
-		if needCombine == atomic.LoadUint32(&processCombine) {
-			close(in)
-		}
 	}
 
 	sort.Strings(data)
@@ -96,33 +99,23 @@ func CombineResults(in, out chan interface{}) {
 
 }
 
+func runner(wg *sync.WaitGroup, in, out chan interface{}, j job) {
+	j(in, out)
+	close(out)
+	wg.Done()
+}
+
 func ExecutePipeline(jobs ...job) {
-	out := make(chan interface{}, 100)
+	size := 100
+	in := make(chan interface{}, size)
+	out := make(chan interface{}, size)
 
-	jobs[0](make(chan interface{}), out)
-	atomic.StoreUint32(&needCombine, uint32(len(out)))
-	inForNext := out
-	for _, jober := range jobs[1 : len(jobs)-1] {
-		outForNext := make(chan interface{}, 100)
-		go jober(inForNext, outForNext)
-
-		/*if ind == 1{
-		fmt.Println("jober", runtime.FuncForPC(reflect.ValueOf(jober).Pointer()).Name())
-		st := time.Now()
-		for _ = range outForNext {
-
-			end := time.Since(st)
-			//muMD5.Lock()
-			//Sh = Sh + end
-			//muMD5.Unlock()
-			fmt.Println("Sh", end)
-			st = time.Now()
-		}
-		}*/
-
-		inForNext = outForNext
+	wg := &sync.WaitGroup{}
+	for _, jober := range jobs {
+		wg.Add(1)
+		go runner(wg, in, out, jober)
+		in = out
+		out = make(chan interface{}, size)
 	}
-
-	jobs[len(jobs)-1](inForNext, make(chan interface{}))
-
+	wg.Wait()
 }

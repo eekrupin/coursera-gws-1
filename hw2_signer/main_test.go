@@ -17,7 +17,6 @@ import (
 правильное поведение: обеспечить беспрепятственный поток
 */
 func TestPipeline(t *testing.T) {
-	return
 	var ok = true
 	var recieved uint32
 	freeFlowJobs := []job{
