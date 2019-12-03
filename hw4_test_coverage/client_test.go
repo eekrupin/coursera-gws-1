@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // код писать тут
@@ -51,6 +52,37 @@ func SearchServer(w http.ResponseWriter, r *http.Request) {
 	//Запускать как go test -cover
 	//Построение покрытия: go test -coverprofile=cover.out && go tool cover -html=cover.out -o cover.html. Для построения покрытия ваш код должен находиться внутри GOPATH
 
+	if query == "timeOut" {
+		query = ""
+		time.Sleep(5 * time.Second)
+	}
+
+	if query == "wrongJson" {
+		query = ""
+		w.Write([]byte("wrongJson"))
+		return
+	}
+
+	if query == "wrongJsonBadRequest" {
+		query = ""
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte("wrongJsonBadRequest"))
+		return
+	}
+
+	if query == "unknownBadRequest" {
+		query = ""
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error": "Unknown Bad Request"}`))
+		return
+	}
+
+	if query == "panic" {
+		query = ""
+		panic("panic")
+		return
+	}
+
 	if accessToken == "" {
 		w.WriteHeader(http.StatusUnauthorized)
 		w.Write([]byte("accessToken is empty"))
@@ -63,7 +95,7 @@ func SearchServer(w http.ResponseWriter, r *http.Request) {
 
 	if !strings.Contains("Id, Age, Name", orderField) {
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte("ErrorBadOrderField"))
+		w.Write([]byte(`{"error": "ErrorBadOrderField"}`))
 		return
 	}
 
@@ -78,7 +110,7 @@ func SearchServer(w http.ResponseWriter, r *http.Request) {
 
 	decoder := xml.NewDecoder(xmlStream)
 
-	root := &Root{}
+	root := &RootXML{}
 	err = decoder.Decode(&root)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -86,15 +118,15 @@ func SearchServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var rows []*Row
-	for _, row := range root.Rows {
-		row.Name = row.First_name + " " + row.Last_name
+	var rows []*UserXML
+	for _, user := range root.Users {
+		user.Name = user.First_name + " " + user.Last_name
 		if query != "" {
-			if !(strings.Contains(row.Name, query) || strings.Contains(row.About, query)) {
+			if !(strings.Contains(user.Name, query) || strings.Contains(user.About, query)) {
 				continue
 			}
 		}
-		rows = append(rows, &row)
+		rows = append(rows, user)
 	}
 
 	//Параметр order_field работает по полям Id, Age, Name, если пустой - то возвращаем по Name
@@ -102,13 +134,21 @@ func SearchServer(w http.ResponseWriter, r *http.Request) {
 		sort.Slice(rows, func(i, j int) bool {
 			ri := reflect.ValueOf(rows[i])
 			rj := reflect.ValueOf(rows[j])
-			vi := reflect.Indirect(ri).FieldByName(orderField).FieldByName(orderField)
-			vj := reflect.Indirect(rj).FieldByName(orderField).FieldByName(orderField)
+			vi := reflect.Indirect(ri).FieldByName(orderField)
+			vj := reflect.Indirect(rj).FieldByName(orderField)
 			switch vi.Kind() {
 			case reflect.Int:
-				return vi.Int() < vj.Int()
+				if orderBy < 0 {
+					return vi.Int() < vj.Int()
+				} else {
+					return vi.Int() > vj.Int()
+				}
 			case reflect.String:
-				return vi.String() < vj.String()
+				if orderBy < 0 {
+					return vi.String() < vj.String()
+				} else {
+					return vi.String() > vj.String()
+				}
 			default:
 				panic("found unprocess sort field: " + orderField)
 			}
@@ -117,11 +157,11 @@ func SearchServer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if offset > 0 {
-		rows = rows[offset-1:]
+		rows = rows[offset:]
 	}
 
 	if limit > 0 {
-		rows = rows[:limit]
+		rows = rows[:Min(limit, len(rows))]
 	}
 
 	data, err := json.Marshal(rows)
@@ -132,37 +172,22 @@ func SearchServer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Write(data)
-	w.WriteHeader(http.StatusOK)
 
 }
 
-/*
-    <id>0</id>
-    <guid>1a6fa827-62f1-45f6-b579-aaead2b47169</guid>
-    <isActive>false</isActive>
-    <balance>$2,144.93</balance>
-    <picture>http://placehold.it/32x32</picture>
-    <age>22</age>
-    <eyeColor>green</eyeColor>
-    <first_name>Boyd</first_name>
-    <last_name>Wolf</last_name>
-    <gender>male</gender>
-    <company>HOPELI</company>
-    <email>boydwolf@hopeli.com</email>
-    <phone>+1 (956) 593-2402</phone>
-    <address>586 Winthrop Street, Edneyville, Mississippi, 9555</address>
-    <about>Nulla cillum enim voluptate consequat laborum esse excepteur occaecat commodo nostrud excepteur ut cupidatat. Occaecat minim incididunt ut proident ad sint nostrud ad laborum sint pariatur. Ut nulla commodo dolore officia. Consequat anim eiusmod amet commodo eiusmod deserunt culpa. Ea sit dolore nostrud cillum proident nisi mollit est Lorem pariatur. Lorem aute officia deserunt dolor nisi aliqua consequat nulla nostrud ipsum irure id deserunt dolore. Minim reprehenderit nulla exercitation labore ipsum.
-</about>
-    <registered>2017-02-05T06:23:27 -03:00</registered>
-    <favoriteFruit>apple</favoriteFruit>
-*/
-
-type Root struct {
-	XMLName xml.Name `xml:"root"`
-	Rows    []Row    `xml:"row"`
+func Min(x, y int) int {
+	if x < y {
+		return x
+	}
+	return y
 }
 
-type Row struct {
+type RootXML struct {
+	XMLName xml.Name   `xml:"root"`
+	Users   []*UserXML `xml:"row"`
+}
+
+type UserXML struct {
 	Id            int    `xml:"id" json:"id"`
 	GUID          string `xml:"guid"`
 	IsActive      bool   `xml:"isActive"`
@@ -186,6 +211,7 @@ type Row struct {
 func TestFailAccessToken(t *testing.T) {
 
 	ts := httptest.NewServer(http.HandlerFunc(SearchServer))
+	defer ts.Close()
 
 	srv := &SearchClient{
 		AccessToken: "",
@@ -209,9 +235,10 @@ func TestFailAccessToken(t *testing.T) {
 
 }
 
-func TestGetData(t *testing.T) {
+func TestTop10(t *testing.T) {
 
 	ts := httptest.NewServer(http.HandlerFunc(SearchServer))
+	defer ts.Close()
 
 	srv := &SearchClient{
 		AccessToken: "AccessToken",
@@ -228,4 +255,310 @@ func TestGetData(t *testing.T) {
 		t.Errorf("SearchClient.FindUsers() not has count 10")
 	}
 
+}
+
+func TestTop30(t *testing.T) {
+
+	ts := httptest.NewServer(http.HandlerFunc(SearchServer))
+	defer ts.Close()
+
+	srv := &SearchClient{
+		AccessToken: "AccessToken",
+		URL:         ts.URL,
+	}
+	got, err := srv.FindUsers(SearchRequest{Limit: 30})
+
+	if err != nil {
+		t.Errorf("SearchClient.FindUsers() = %v, want nil error", err)
+		return
+	}
+
+	if len(got.Users) != 25 {
+		t.Errorf("SearchClient.FindUsers() not has count 25")
+	}
+
+	if !got.NextPage {
+		t.Errorf("NextPage must be")
+	}
+
+}
+
+func TestOffset(t *testing.T) {
+
+	ts := httptest.NewServer(http.HandlerFunc(SearchServer))
+	defer ts.Close()
+
+	srv := &SearchClient{
+		AccessToken: "AccessToken",
+		URL:         ts.URL,
+	}
+	got5, err := srv.FindUsers(SearchRequest{Limit: 5})
+	if err != nil {
+		t.Errorf("SearchClient.FindUsers() = %v, want nil : ", err)
+		return
+	}
+
+	gotOffset4, err := srv.FindUsers(SearchRequest{Limit: 5, Offset: 4})
+	if err != nil {
+		t.Errorf("SearchClient.FindUsers() = %v, want nil error: ", err)
+		return
+	}
+
+	if got5.Users[4].Id != gotOffset4.Users[0].Id {
+		t.Errorf("Offset not work")
+	}
+
+}
+
+func TestWrongLimit(t *testing.T) {
+
+	ts := httptest.NewServer(http.HandlerFunc(SearchServer))
+	defer ts.Close()
+
+	srv := &SearchClient{
+		AccessToken: "AccessToken",
+		URL:         ts.URL,
+	}
+	_, err := srv.FindUsers(SearchRequest{Limit: -5})
+
+	if err == nil {
+		t.Errorf("err must be not nil")
+		return
+	}
+
+	want := "limit must be > 0"
+	if err.Error() != want {
+		t.Errorf("err must be: %s, get: %s", want, err)
+		return
+	}
+
+}
+
+func TestWrongOffset(t *testing.T) {
+
+	ts := httptest.NewServer(http.HandlerFunc(SearchServer))
+	defer ts.Close()
+
+	srv := &SearchClient{
+		AccessToken: "AccessToken",
+		URL:         ts.URL,
+	}
+	_, err := srv.FindUsers(SearchRequest{Offset: -5})
+
+	if err == nil {
+		t.Errorf("err must be not nil")
+		return
+	}
+
+	want := "offset must be > 0"
+	if err.Error() != want {
+		t.Errorf("err must be: %s, get: %s", want, err)
+		return
+	}
+
+}
+
+func TestWrongSortName(t *testing.T) {
+
+	ts := httptest.NewServer(http.HandlerFunc(SearchServer))
+	defer ts.Close()
+
+	srv := &SearchClient{
+		AccessToken: "AccessToken",
+		URL:         ts.URL,
+	}
+	_, err := srv.FindUsers(SearchRequest{Limit: 10, OrderField: "Company"})
+
+	if err == nil {
+		t.Errorf("err must be not nil")
+		return
+	}
+
+	want := "OrderFeld Company invalid"
+	if err.Error() != want {
+		t.Errorf("err must be: %s, get: %s", want, err)
+	}
+
+}
+
+func TestSort(t *testing.T) {
+
+	ts := httptest.NewServer(http.HandlerFunc(SearchServer))
+	ts.Config.IdleTimeout = time.Nanosecond
+	defer ts.Close()
+
+	srv := &SearchClient{
+		AccessToken: "AccessToken",
+		URL:         ts.URL,
+	}
+	gotOrderByAsc, err := srv.FindUsers(SearchRequest{Limit: 5, Offset: 30, OrderBy: OrderByAsc, OrderField: "Id"})
+	if err != nil {
+		t.Errorf("SearchClient.FindUsers() = %v, want nil : ", err)
+		return
+	}
+
+	gotOrderByDesc, err := srv.FindUsers(SearchRequest{Limit: 5, OrderBy: OrderByDesc, OrderField: "Id"})
+	if err != nil {
+		t.Errorf("SearchClient.FindUsers() = %v, want nil error: ", err)
+		return
+	}
+
+	if gotOrderByAsc.Users[4].Id != gotOrderByDesc.Users[0].Id {
+		t.Errorf("Sort not work")
+	}
+
+}
+
+func TestTimeOut(t *testing.T) {
+
+	ts := httptest.NewServer(http.HandlerFunc(SearchServer))
+	defer ts.Close()
+
+	srv := &SearchClient{
+		AccessToken: "AccessToken",
+		URL:         ts.URL,
+	}
+	_, err := srv.FindUsers(SearchRequest{Limit: 5, Offset: 30, Query: "timeOut"})
+	if err == nil {
+		t.Errorf("must be error timeOut")
+		return
+	}
+
+	if !strings.Contains(err.Error(), "timeout") {
+		t.Errorf("must be error with text timeOut")
+		return
+	}
+}
+
+func TestWrongJsonServer(t *testing.T) {
+
+	ts := httptest.NewServer(http.HandlerFunc(SearchServer))
+	defer ts.Close()
+
+	srv := &SearchClient{
+		AccessToken: "AccessToken",
+		URL:         ts.URL,
+	}
+	_, err := srv.FindUsers(SearchRequest{Limit: 5, Offset: 30, Query: "wrongJson"})
+	if err == nil {
+		t.Errorf("must be error")
+		return
+	}
+
+	want := "cant unpack result json"
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("must be error with text '%s'. Get: %s", want, err)
+		return
+	}
+}
+
+func TestWrongJsonBadRequestServer(t *testing.T) {
+
+	ts := httptest.NewServer(http.HandlerFunc(SearchServer))
+	defer ts.Close()
+
+	srv := &SearchClient{
+		AccessToken: "AccessToken",
+		URL:         ts.URL,
+	}
+	_, err := srv.FindUsers(SearchRequest{Limit: 5, Offset: 30, Query: "wrongJsonBadRequest"})
+	if err == nil {
+		t.Errorf("must be error")
+		return
+	}
+
+	want := "cant unpack error json"
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("must be error with text '%s'. Get: %s", want, err)
+		return
+	}
+}
+
+func TestPanicServer(t *testing.T) {
+
+	ts := httptest.NewServer(http.HandlerFunc(SearchServer))
+	defer ts.Close()
+
+	srv := &SearchClient{
+		AccessToken: "AccessToken",
+		URL:         ts.URL,
+	}
+	_, err := srv.FindUsers(SearchRequest{Limit: 5, Offset: 30, Query: "panic"})
+	if err == nil {
+		t.Errorf("must be error")
+		return
+	}
+
+	want := "SearchServer fatal error"
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("must be error with text '%s'. Get: %s", want, err)
+		return
+	}
+}
+
+func TestUnknownBadRequestServer(t *testing.T) {
+
+	ts := httptest.NewServer(http.HandlerFunc(SearchServer))
+	defer ts.Close()
+
+	srv := &SearchClient{
+		AccessToken: "AccessToken",
+		URL:         ts.URL,
+	}
+	_, err := srv.FindUsers(SearchRequest{Limit: 5, Offset: 30, Query: "unknownBadRequest"})
+	if err == nil {
+		t.Errorf("must be error")
+		return
+	}
+
+	want := "unknown bad request"
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("must be error with text '%s'. Get: %s", want, err)
+		return
+	}
+}
+
+func TestTop10Query(t *testing.T) {
+
+	ts := httptest.NewServer(http.HandlerFunc(SearchServer))
+	defer ts.Close()
+
+	srv := &SearchClient{
+		AccessToken: "AccessToken",
+		URL:         ts.URL,
+	}
+
+	want := "Nicholson"
+	got, err := srv.FindUsers(SearchRequest{Limit: 10, Query: want})
+
+	if err != nil {
+		t.Errorf("SearchClient.FindUsers() = %v, want nil error", err)
+		return
+	}
+
+	for _, user := range got.Users {
+		if !strings.Contains(user.Name, want) {
+			t.Errorf("User %s dont have '%s'", user.Name, want)
+		}
+	}
+
+}
+
+func TestUnknownErrorServer(t *testing.T) {
+
+	srv := &SearchClient{
+		AccessToken: "AccessToken",
+		URL:         "UnknownError",
+	}
+	_, err := srv.FindUsers(SearchRequest{})
+	if err == nil {
+		t.Errorf("must be error")
+		return
+	}
+
+	want := "unknown error"
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("must be error with text '%s'. Get: %s", want, err)
+		return
+	}
 }
